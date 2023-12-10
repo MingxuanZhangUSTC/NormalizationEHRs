@@ -1,0 +1,109 @@
+---
+title: "sample code_GMM"
+output: html_document
+---
+
+```{r}
+#EM code.
+dyn.load("Concordance.dll")
+unmap <- function(classification){
+    n <- length(classification)
+    u <- sort(unique(classification))
+    labs <- as.character(u)
+    k <- length(u)
+    z <- matrix(0, n, k)
+    for (j in 1:k) z[classification == u[j], j] <- 1
+    dimnames(z) <- list(NULL, labs)
+    return(z)
+}
+em.normal.univariate <- function(data, class, tol=0.000001, restriction=0, constrain=0, iteration=1000){
+	n <- as.integer(length(data))
+	g <- as.integer(nlevels(as.factor(class)))
+	z <- unmap(class)
+	pi <- double(g)
+	mu <- double(g)
+	sigma <- double(g)
+	loglik <- double(1)
+	convergence <- integer(1)
+	if(restriction>0){
+		if(length(constrain)==g){
+			results <- .C("em_normal_univariate", as.double(data), as.double(z), n, pi, mu, sigma, as.integer(g), loglik, as.double(tol), as.integer(restriction), as.integer(constrain), as.integer(iteration), convergence)
+		}else{
+			return(0)
+		}
+	}else{
+		results <- .C("em_normal_univariate", as.double(data), as.double(z), n, pi, mu, sigma, as.integer(g), loglik, as.double(tol), as.integer(restriction), as.integer(constrain), as.integer(iteration), convergence)
+	}
+	return(list(convergence=results[[13]], pi=results[[4]], mu=results[[5]], sigma=results[[6]], loglik=results[[8]], class=array(results[[2]], dim=c(n,g))))
+}
+```
+
+```{r}
+#GMM transformation code.
+library(openxlsx)
+panel_ori<-read.xlsx("simulation data.xlsx")
+panel_linear<-read.xlsx("simulation data_lineartrans.xlsx")
+panel_GMM=panel_ori
+#number_of_items: the number of test items in the panel.
+number_of_items=dim(panel_ori)[2]/3  
+for (i in 1:number_of_items){
+table=data.frame(table(panel_ori[,(2*i-1+number_of_items):(2*i+number_of_items)]))
+table=table[table$Freq!=0,]
+table=table[order(as.numeric(as.character(table[,3])),decreasing=T),]
+  Number_of_ranges=dim(table)[1]
+  if (Number_of_ranges>1){
+  x_ori=panel_ori[which(panel_ori[,2*i-1+number_of_items]==table[1,1]&panel_ori[,2*i+number_of_items]==table[1,2]),i]
+  mu_x=(as.numeric(as.character(table[1,1]))+as.numeric(as.character(table[1,2])))/2 
+  sigma_x=(1.96*(as.numeric(as.character(table[1,2]))-as.numeric(as.character(table[1,1])))/2)
+  
+  #Standardization.
+  x<-(x_ori-mu_x)/sigma_x
+  
+  #Initialize iteration parameters.
+  x<-cbind(x)
+  class_x <- NULL
+  class_x<- sample(-1:1, table[1,3], replace = T)
+  class_x<-cbind(class_x)
+  
+  result1<-em.normal.univariate (x, class_x, tol=0.000001, restriction=1, constrain=c(0,-1,1), iteration=5000)
+  mu_x_1=result1$mu[1]*sigma_x+mu_x
+  mu_x_2=result1$mu[2]*sigma_x+mu_x
+  mu_x_3=result1$mu[3]*sigma_x+mu_x
+  sigma_x_1=result1$sigma[1]*sigma_x
+  sigma_x_2=result1$sigma[2]*sigma_x
+  sigma_x_3=result1$sigma[3]*sigma_x
+  for (j in 2:Number_of_ranges){
+    y_ori=panel_ori[which(panel_ori[,2*i-1+number_of_items]==table[j,1]&panel_ori[,2*i+number_of_items]==table[j,2]),i]
+    mu_y=(as.numeric(as.character(table[j,1]))+as.numeric(as.character(table[j,2])))/2
+  sigma_y=(1.96*(as.numeric(as.character(table[j,2]))-as.numeric(as.character(table[j,1])))/2)
+  y<-(y_ori-mu_y)/sigma_y
+  y<-cbind(y)
+  class_y <- NULL
+  class_y<- sample(-1:1, table[j,3], replace = T)
+  class_y<-cbind(class_y)
+result2<-em.normal.univariate (y, class_y, tol=0.000001, restriction=1, constrain=c(0,-1,1), iteration=5000)
+#Judging convergence:
+if (as.numeric(result2[1])==1&as.numeric(result1[1])==1){
+  #A judgment on whether the sample size is sufficient.
+  if (abs(result2$pi[2]-result1$pi[2])<0.1&abs(result2$pi[1]-result1$pi[1])<0.1&abs(result2$pi[3]-result1$pi[3])<0.1){
+  mu_y_1=result2$mu[1]*sigma_y+mu_y
+  mu_y_2=result2$mu[2]*sigma_y+mu_y
+  mu_y_3=result2$mu[3]*sigma_y+mu_y
+  sigma_y_1=result2$sigma[1]*sigma_y
+  sigma_y_2=result2$sigma[2]*sigma_y
+  sigma_y_3=result2$sigma[3]*sigma_y
+  Y=result2$class[,1]*((y_ori-mu_y_1)*sigma_x_1/sigma_y_1+mu_x_1)+result2$class[,2]*((y_ori-mu_y_2)*sigma_x_2/sigma_y_2+mu_x_2)+result2$class[,3]*((y_ori-mu_y_3)*sigma_x_3/sigma_y_3+mu_x_3) 
+  panel_GMM[which(panel_ori[,2*i-1+number_of_items]==table[j,1]&panel_ori[,2*i+number_of_items]==table[j,2]),i]<-Y}
+   else{
+panel_GMM[which(panel_ori[,2*i-1+number_of_items]==table[j,1]&panel_ori[,2*i+number_of_items]==table[j,2]),i]<-panel_linear[which(panel_ori[,2*i-1+number_of_items]==table[j,1]&panel_ori[,2*i+number_of_items]==table[j,2]),i]}} 
+#Transformation of non-convergence part of EM algorithm: replaced by Linear transformation.
+  else{
+panel_GMM[which(panel_ori[,2*i-1+number_of_items]==table[j,1]&panel_ori[,2*i+number_of_items]==table[j,2]),i]<-panel_linear[which(panel_ori[,2*i-1+number_of_items]==table[j,1]&panel_ori[,2*i+number_of_items]==table[j,2]),i]}
+  }}}
+panel_GMM[,(number_of_items+1):(number_of_items*3)]=panel_linear[,(number_of_items+1):(number_of_items*3)]
+
+
+#GMM-transformated result:
+panel_GMM
+```
+
